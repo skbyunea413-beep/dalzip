@@ -368,7 +368,7 @@ pub fn create(archive: &Path, inputs: &[PathBuf], o: &CreateOpts) -> Result<Crea
     };
 
     let header = write_header(kdf.as_ref());
-    let mut out = BufWriter::with_capacity(4 << 20, File::create(&part).with_context(|| format!("cannot create {}", part.display()))?);
+    let mut out = BufWriter::with_capacity(4 << 20, crate::util::create_part(&part).with_context(|| format!("cannot create {}", part.display()))?);
     out.write_all(&header)?;
 
     let result = (|| -> Result<(Totals, u64, String)> {
@@ -439,7 +439,7 @@ pub fn create(archive: &Path, inputs: &[PathBuf], o: &CreateOpts) -> Result<Crea
             return Err(e);
         }
     };
-    fs::rename(&part, archive).with_context(|| format!("cannot move {} into place", part.display()))?;
+    crate::util::publish_part(&part, archive).with_context(|| format!("cannot move {} into place", part.display()))?;
 
     Ok(CreateReport {
         files: t.files,

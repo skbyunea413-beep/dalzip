@@ -285,7 +285,7 @@ pub fn create_zip(archive: &Path, inputs: &[PathBuf], level: u32, progress: Opti
         p.set_total(sources.iter().map(|s| s.size).sum());
     }
 
-    let mut o = Out { w: BufWriter::with_capacity(4 << 20, File::create(&part).with_context(|| format!("cannot create {}", part.display()))?), pos: 0 };
+    let mut o = Out { w: BufWriter::with_capacity(4 << 20, crate::util::create_part(&part).with_context(|| format!("cannot create {}", part.display()))?), pos: 0 };
     let result = (|| -> Result<(usize, usize, u64)> {
         let tz = local_offset_secs();
         let batch_bytes = (rayon::current_num_threads() as u64 * BIG).max(2 * BIG);
@@ -407,6 +407,6 @@ pub fn create_zip(archive: &Path, inputs: &[PathBuf], level: u32, progress: Opti
             return Err(e);
         }
     };
-    fs::rename(&part, archive).with_context(|| format!("cannot move {} into place", part.display()))?;
+    crate::util::publish_part(&part, archive).with_context(|| format!("cannot move {} into place", part.display()))?;
     Ok(ZipReport { files, dirs, raw, size, secs: started.elapsed().as_secs_f64(), warnings })
 }

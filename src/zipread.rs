@@ -208,6 +208,7 @@ pub fn extract_zip(
             Ok(bytes)
         })
         .collect();
+    crate::extract::notify_extracted(out);
     let mut bytes = 0;
     for r in results {
         bytes += r?;

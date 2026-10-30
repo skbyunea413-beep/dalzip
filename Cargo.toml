@@ -37,7 +37,7 @@ encoding_rs = "0.8"
 egui_extras = { version = "0.37", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_SystemInformation", "Win32_Security", "Win32_System_Registry", "Win32_System_Time", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_SystemInformation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Registry", "Win32_System_Time", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [workspace]
 members = [".", "shell"]

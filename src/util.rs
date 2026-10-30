@@ -2,6 +2,7 @@ use crate::crypto::KdfParams;
 use crate::format::{FLAG_ENCRYPTED, MAGIC};
 use anyhow::{bail, Result};
 use std::io::Read;
+use std::path::Path;
 
 pub fn human(n: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
@@ -51,6 +52,64 @@ pub fn unix_from_civil(y: i64, m: i64, d: i64, h: i64, mi: i64, s: i64) -> i64 {
 pub fn fmt_time_at(secs: i64, offset_secs: i64) -> String {
     let (y, m, d, h, mi, _) = civil(secs + offset_secs);
     format!("{y:04}-{m:02}-{d:02} {h:02}:{mi:02}")
+}
+
+/// Creates the temporary `<archive>.part`, hidden on Windows so Explorer does
+/// not list it while it grows. Explorer keeps an item where it first appeared
+/// and does not re-sort when its size or date changes; a hidden part that is
+/// renamed and then unhidden appears once, finished, in its sorted place.
+pub fn create_part(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create(true).truncate(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
+        o.attributes(FILE_ATTRIBUTE_HIDDEN);
+    }
+    o.open(path)
+}
+
+/// Moves a finished `.part` into place, makes it visible, and tells Explorer
+/// the folder changed.
+pub fn publish_part(part: &Path, target: &Path) -> std::io::Result<()> {
+    std::fs::rename(part, target)?;
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Storage::FileSystem::{GetFileAttributesW, SetFileAttributesW, FILE_ATTRIBUTE_HIDDEN, INVALID_FILE_ATTRIBUTES};
+        let w = wide(target);
+        unsafe {
+            let a = GetFileAttributesW(w.as_ptr());
+            if a != INVALID_FILE_ATTRIBUTES && a & FILE_ATTRIBUTE_HIDDEN != 0 {
+                SetFileAttributesW(w.as_ptr(), a & !FILE_ATTRIBUTE_HIDDEN);
+            }
+        }
+    }
+    if let Some(dir) = target.parent() {
+        notify_dir_changed(dir);
+    }
+    Ok(())
+}
+
+/// Asks Explorer windows showing `dir` to re-read it (SHCNE_UPDATEDIR), so a
+/// view sorted by date or size puts new and changed items in place without a
+/// manual refresh.
+pub fn notify_dir_changed(dir: &Path) {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::Shell::{SHChangeNotify, SHCNE_UPDATEDIR, SHCNF_FLUSHNOWAIT, SHCNF_PATHW};
+        let dir = std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
+        let w = wide(&dir);
+        unsafe { SHChangeNotify(SHCNE_UPDATEDIR as i32, SHCNF_PATHW | SHCNF_FLUSHNOWAIT, w.as_ptr() as *const _, std::ptr::null()) };
+    }
+    #[cfg(not(windows))]
+    let _ = dir;
+}
+
+#[cfg(windows)]
+fn wide(p: &Path) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+    p.as_os_str().encode_wide().chain(std::iter::once(0)).collect()
 }
 
 /// Seconds to add to UTC for local time (standard time; no DST rules).

@@ -503,10 +503,22 @@ pub fn extract(
         i = j;
     }
 
+    notify_extracted(out);
     if !bad.is_empty() {
         bail!("{} file(s) failed verification: {}", bad.len(), bad.join(", "));
     }
     Ok(ExtractReport { files: files.len(), bytes, secs: started.elapsed().as_secs_f64() })
+}
+
+/// Lets Explorer re-sort the output folder and the folder it sits in (a new
+/// "<name>\" folder appears there and keeps changing while files land in it).
+pub(crate) fn notify_extracted(out: Option<&Path>) {
+    if let Some(dir) = out {
+        crate::util::notify_dir_changed(dir);
+        if let Some(parent) = dir.parent() {
+            crate::util::notify_dir_changed(parent);
+        }
+    }
 }
 
 #[cfg(test)]

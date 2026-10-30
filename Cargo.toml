@@ -1,0 +1,50 @@
+[package]
+name = "dalzip"
+version = "0.1.0"
+edition = "2021"
+description = "Solid archiver with content-defined dedup, per-block adaptive codecs and authenticated encryption"
+license = "MIT"
+
+[[bin]]
+name = "dz"
+path = "src/main.rs"
+
+[[bin]]
+name = "dzui"
+path = "src/bin/dzui/main.rs"
+
+[dependencies]
+anyhow = "1"
+argon2 = "0.5"
+blake3 = "1"
+chacha20poly1305 = "0.10"
+clap = { version = "4", features = ["derive"] }
+fastcdc = "3"
+filetime = "0.2"
+ppmd-rust = "1.5"
+rayon = "1"
+walkdir = "2"
+lzma-sys = "0.1"
+zstd = "0.13"
+eframe = { version = "0.37", default-features = false, features = ["default_fonts", "glow", "accesskit"] }
+rfd = "0.17"
+crc32fast = "1"
+flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
+zopfli = { version = "0.8", default-features = false, features = ["std"] }
+libdeflater = "1.26"
+zip = { version = "9", default-features = false, features = ["aes-crypto", "bzip2", "deflate64", "deflate-flate2-zlib-rs", "lzma", "ppmd", "zstd", "xz"] }
+encoding_rs = "0.8"
+egui_extras = { version = "0.37", default-features = false }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_SystemInformation", "Win32_Security", "Win32_System_Registry", "Win32_System_Time", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+
+[workspace]
+members = [".", "shell"]
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+[build-dependencies]
+winresource = "0.1"

@@ -3,7 +3,9 @@
 //!
 //! Small files are read and deflated in parallel batches, then written in
 //! order; files of `BIG` bytes or more stream through one deflater and get
-//! their local header patched afterwards. Already-compressed types are stored.
+//! their local header patched afterwards. Every small file is deflated and
+//! stored instead when that does not shrink it; large already-compressed files
+//! (video, archives) are stored without trying, since a stream cannot be undone.
 //!
 //! Levels: 0 store, 1-9 zlib-rs, 10 libdeflate-12, 11 Zopfli (see `deflate`).
 
@@ -163,7 +165,11 @@ fn pack(s: &Source, level: u32, progress: Option<&Progress>) -> Result<Packed> {
     }
     let crc = crc32fast::hash(&raw);
     let size = raw.len() as u64;
-    if s.group != Group::Packed && raw.len() > 64 && level > 0 {
+    if raw.len() > 64 && level > 0 {
+        // Already-compressed types (mp3, jpg, …) still shrink a little under deflate
+        // (an MP3 here: 0.4%), so try them too; the store fallback below keeps
+        // anything that grew. Zopfli (11) is too slow for that small a gain.
+        let level = if s.group == Group::Packed { level.min(10) } else { level };
         let data = deflate(&raw, level)?;
         if data.len() < raw.len() {
             return Ok(Packed { crc, method: DEFLATE, size, data });

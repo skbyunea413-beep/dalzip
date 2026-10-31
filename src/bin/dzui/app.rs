@@ -5,7 +5,7 @@
 
 use eframe::egui;
 use crate::icons::{self, Icon};
-use crate::jobs::{self, Format, Job, Outcome, Request};
+use crate::jobs::{self, After, Format, Job, Outcome, Request};
 use crate::register;
 use crate::settings::{self, Settings, MENU};
 use dalzip::format::Kind;
@@ -37,7 +37,7 @@ enum Screen {
     ExtractDlg(ExtractDlg),
     Password(PasswordPrompt),
     Running(Job),
-    Finished { title: String, text: String, open: Option<PathBuf>, ok: bool, retry: Option<Request> },
+    Finished { title: String, text: String, open: Option<PathBuf>, ok: bool, retry: Option<(Request, After)> },
 }
 
 pub struct App {
@@ -51,8 +51,8 @@ impl App {
             Launch::Start => Screen::Start,
             Launch::Open(p) => open_archive(p, None),
             Launch::Compose(files) => Screen::Compose(Compose::new(files)),
-            Launch::ExtractDialog(archives) => Screen::ExtractDlg(ExtractDlg::new(archives)),
-            Launch::Quick(req) => start_req(req, &cc.egui_ctx, true),
+            Launch::ExtractDialog(archives) => Screen::ExtractDlg(ExtractDlg::new(archives, None, None)),
+            Launch::Quick(req) => start_req(req, &cc.egui_ctx, After::CLOSE),
             Launch::Settings => Screen::Settings(SettingsUi::new()),
         };
         App { screen, tz_offset }
@@ -86,7 +86,7 @@ fn needs_password(path: &Path) -> bool {
 }
 
 /// Starts `req`, asking for a password first when an input archive needs one.
-fn start_req(req: Request, ctx: &egui::Context, auto_close: bool) -> Screen {
+fn start_req(req: Request, ctx: &egui::Context, after: After) -> Screen {
     let needs_pw = match &req {
         Request::Extract { archives, password: None, .. } | Request::Test { archives, password: None } => {
             archives.iter().any(|a| needs_password(a))
@@ -94,9 +94,9 @@ fn start_req(req: Request, ctx: &egui::Context, auto_close: bool) -> Screen {
         _ => false,
     };
     if needs_pw {
-        return Screen::Password(PasswordPrompt::new(Pending::Run(req, auto_close)));
+        return Screen::Password(PasswordPrompt::new(Pending::Run(req, after)));
     }
-    Screen::Running(jobs::spawn(req, ctx.clone(), auto_close))
+    Screen::Running(jobs::spawn(req, ctx.clone(), after))
 }
 
 fn failed(title: &str, e: &anyhow::Error) -> Screen {
@@ -146,29 +146,34 @@ impl eframe::App for App {
                     }
                 }
                 Some(BrowseAction::New) => next = Some(Screen::Compose(Compose::new(Vec::new()))),
-                Some(BrowseAction::Run(req)) => next = Some(start_req(req, &ctx, false)),
+                Some(BrowseAction::Run(req, after)) => next = Some(start_req(req, &ctx, after)),
+                Some(BrowseAction::Extract) => next = Some(Screen::ExtractDlg(ExtractDlg::new(vec![b.path.clone()], b.password.clone(), Some(b.path.clone())))),
                 None => {}
             },
             Screen::Compose(c) => {
                 if let Some(req) = c.ui(ui) {
-                    next = Some(start_req(req, &ctx, false));
+                    next = Some(start_req(req, &ctx, After::default()));
                 }
             }
-            Screen::ExtractDlg(d) => {
-                if let Some(req) = d.ui(ui) {
-                    next = Some(start_req(req, &ctx, false));
-                }
-            }
+            Screen::ExtractDlg(d) => match d.ui(ui) {
+                Some(DlgAction::Start(req, after)) => next = Some(start_req(req, &ctx, after)),
+                // Back to the archive it came from, or gone if the shell opened the dialog.
+                Some(DlgAction::Cancel) => match d.back.take() {
+                    Some(p) => next = Some(open_archive(p, d.password.clone())),
+                    None => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+                },
+                None => {}
+            },
             Screen::Password(p) => match p.ui(ui) {
                 Some(Some((pending, pw))) => {
                     next = Some(match pending {
                         Pending::Open(path) => open_archive(path, Some(pw)),
-                        Pending::Run(mut req, auto) => {
+                        Pending::Run(mut req, after) => {
                             match &mut req {
                                 Request::Extract { password, .. } | Request::Test { password, .. } => *password = Some(pw),
                                 _ => {}
                             }
-                            Screen::Running(jobs::spawn(req, ctx.clone(), auto))
+                            Screen::Running(jobs::spawn(req, ctx.clone(), after))
                         }
                     })
                 }
@@ -177,8 +182,11 @@ impl eframe::App for App {
             },
             Screen::Running(job) => {
                 if let Some(s) = running_ui(ui, job) {
-                    if let Screen::Finished { ok: true, .. } = &s {
-                        if job.auto_close {
+                    if let Screen::Finished { ok: true, open, .. } = &s {
+                        if let (true, Some(dir)) = (job.after.open_folder, open) {
+                            let _ = std::process::Command::new("explorer.exe").arg(dir).spawn();
+                        }
+                        if job.after.close {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                         }
                     }
@@ -191,9 +199,9 @@ impl eframe::App for App {
                 Some(FinishAction::Close) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
                 Some(FinishAction::Home) => next = Some(Screen::Start),
                 Some(FinishAction::Overwrite) => {
-                    if let Some(Request::Extract { archives, base, target, password, delete_archives, .. }) = retry.take() {
+                    if let Some((Request::Extract { archives, base, target, password, delete_archives, .. }, after)) = retry.take() {
                         let req = Request::Extract { archives, base, target, overwrite: true, password, delete_archives };
-                        next = Some(Screen::Running(jobs::spawn(req, ctx.clone(), false)));
+                        next = Some(Screen::Running(jobs::spawn(req, ctx.clone(), after)));
                     }
                 }
                 None => {}
@@ -333,7 +341,9 @@ impl Node {
 enum BrowseAction {
     Open,
     New,
-    Run(Request),
+    Run(Request, After),
+    /// Open the extract dialog.
+    Extract,
 }
 
 struct Browser {
@@ -389,22 +399,22 @@ impl Browser {
         egui::Panel::top("toolbar").frame(egui::Frame::new().fill(Color32::from_rgb(38, 132, 226)).inner_margin(egui::Margin::symmetric(14, 6))).show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 14.0;
+                // Bandizip's order: open, extract, new, then the rest.
                 if tool(ui, Icon::Open, "열기") {
                     action = Some(BrowseAction::Open);
+                }
+                if tool(ui, Icon::Extract, "풀기") {
+                    action = Some(BrowseAction::Extract);
                 }
                 if tool(ui, Icon::New, "새로 압축") {
                     action = Some(BrowseAction::New);
                 }
-                if tool(ui, Icon::Extract, "풀기") {
-                    if let Some(dir) = rfd::FileDialog::new().set_directory(self.path.parent().unwrap_or(Path::new("."))).pick_folder() {
-                        action = Some(BrowseAction::Run(self.extract_req(Some(dir), Target::Auto)));
-                    }
-                }
                 if tool(ui, Icon::Auto, "알아서 풀기") {
-                    action = Some(BrowseAction::Run(self.extract_req(None, Target::Auto)));
+                    action = Some(BrowseAction::Run(self.extract_req(None, Target::Auto), Settings::load().after_extract()));
                 }
                 if tool(ui, Icon::Test, "테스트") {
-                    action = Some(BrowseAction::Run(Request::Test { archives: vec![self.path.clone()], password: self.password.clone() }));
+                    let req = Request::Test { archives: vec![self.path.clone()], password: self.password.clone() };
+                    action = Some(BrowseAction::Run(req, After::default()));
                 }
             });
         });
@@ -865,61 +875,165 @@ impl Compose {
 
 // ---------------------------------------------------------------- extract dialog
 
+/// Bandizip's "압축 풀 폴더 선택", with Windows' own folder picker instead of a
+/// built-in tree, plus shortcuts to common places.
 struct ExtractDlg {
     archives: Vec<PathBuf>,
     folder: String,
     target: Target,
     overwrite: bool,
     delete: bool,
+    close: bool,
+    open: bool,
+    remember: bool,
+    password: Option<String>,
+    /// The archive window to go back to on cancel; `None` = launched by the shell.
+    back: Option<PathBuf>,
+}
+
+enum DlgAction {
+    Start(Request, After),
+    Cancel,
+}
+
+fn target_from(n: u32) -> Target {
+    match n {
+        1 => Target::Name,
+        2 => Target::Here,
+        _ => Target::Auto,
+    }
+}
+
+fn target_to(t: Target) -> u32 {
+    match t {
+        Target::Auto => 0,
+        Target::Name => 1,
+        Target::Here => 2,
+    }
+}
+
+/// A known shell folder (follows OneDrive redirection of Desktop/Documents).
+fn known_folder(id: &windows_sys::core::GUID) -> Option<PathBuf> {
+    use windows_sys::Win32::System::Com::CoTaskMemFree;
+    use windows_sys::Win32::UI::Shell::SHGetKnownFolderPath;
+    let mut p: windows_sys::core::PWSTR = std::ptr::null_mut();
+    if unsafe { SHGetKnownFolderPath(id, 0, std::ptr::null_mut(), &mut p) } != 0 || p.is_null() {
+        return None;
+    }
+    let len = (0..).take_while(|&i| unsafe { *p.add(i) } != 0).count();
+    let s = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(p, len) });
+    unsafe { CoTaskMemFree(p as *const _) };
+    Some(PathBuf::from(s))
 }
 
 impl ExtractDlg {
-    fn new(archives: Vec<PathBuf>) -> ExtractDlg {
+    fn new(archives: Vec<PathBuf>, password: Option<String>, back: Option<PathBuf>) -> ExtractDlg {
         let folder = archives.first().and_then(|a| a.parent()).map(|d| d.display().to_string()).unwrap_or_default();
-        ExtractDlg { archives, folder, target: Target::Auto, overwrite: false, delete: false }
+        let s = Settings::load();
+        let (target, delete) = if s.extract_remember { (target_from(s.extract_target), s.extract_delete) } else { (Target::Auto, false) };
+        ExtractDlg {
+            archives,
+            folder,
+            target,
+            overwrite: false,
+            delete,
+            close: s.extract_close,
+            open: s.extract_open,
+            remember: s.extract_remember,
+            password,
+            back,
+        }
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui) -> Option<Request> {
-        let mut start = None;
-        egui::CentralPanel::default().frame(page_frame()).show(ui, |ui| {
-            ui.heading("압축 풀기");
-            ui.add_space(8.0);
-            for a in &self.archives {
-                ui.horizontal(|ui| {
-                    icons::inline(ui, Icon::Archive);
-                    ui.label(a.display().to_string());
-                });
-            }
-            ui.add_space(10.0);
+    fn ui(&mut self, ui: &mut egui::Ui) -> Option<DlgAction> {
+        let mut act = None;
+        egui::Panel::bottom("extract_buttons").frame(egui::Frame::new().fill(Color32::from_gray(242)).inner_margin(12.0)).show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label("대상 폴더");
-                ui.add(egui::TextEdit::singleline(&mut self.folder).desired_width(380.0));
-                if ui.button("찾아보기...").clicked() {
-                    if let Some(d) = rfd::FileDialog::new().pick_folder() {
-                        self.folder = d.display().to_string();
+                let ok = egui::Button::new(RichText::new("압축 풀기").size(16.0).color(Color32::WHITE)).fill(ACCENT).min_size(Vec2::new(130.0, 34.0));
+                if ui.add_enabled(!self.folder.trim().is_empty(), ok).clicked() {
+                    if self.remember {
+                        let mut s = Settings::load();
+                        s.extract_target = target_to(self.target);
+                        s.extract_delete = self.delete;
+                        s.extract_close = self.close;
+                        s.extract_open = self.open;
+                        s.extract_remember = true;
+                        let _ = s.save();
+                    } else {
+                        let mut s = Settings::load();
+                        s.extract_remember = false;
+                        let _ = s.save();
                     }
+                    let req = Request::Extract {
+                        archives: self.archives.clone(),
+                        base: Some(PathBuf::from(self.folder.trim())),
+                        target: self.target,
+                        overwrite: self.overwrite,
+                        password: self.password.clone(),
+                        delete_archives: self.delete,
+                    };
+                    act = Some(DlgAction::Start(req, After { close: self.close, open_folder: self.open }));
+                }
+                if ui.add(egui::Button::new("취소").min_size(Vec2::new(90.0, 34.0))).clicked() {
+                    act = Some(DlgAction::Cancel);
                 }
             });
-            ui.add_space(6.0);
-            ui.radio_value(&mut self.target, Target::Auto, "알아서 풀기 (최상위 항목이 하나면 그대로, 여러 개면 새 폴더)");
-            ui.radio_value(&mut self.target, Target::Name, "압축 파일 이름으로 된 폴더에 풀기");
-            ui.radio_value(&mut self.target, Target::Here, "대상 폴더에 바로 풀기");
-            ui.checkbox(&mut self.overwrite, "같은 이름의 파일이 있으면 덮어쓰기");
-            ui.checkbox(&mut self.delete, "다 풀고 체크섬이 맞으면 압축 파일을 휴지통으로");
-            ui.add_space(14.0);
-            let b = egui::Button::new(RichText::new("압축 풀기").size(16.0).color(Color32::WHITE)).fill(ACCENT).min_size(Vec2::new(140.0, 36.0));
-            if ui.add_enabled(!self.folder.trim().is_empty(), b).clicked() {
-                start = Some(Request::Extract {
-                    archives: self.archives.clone(),
-                    base: Some(PathBuf::from(self.folder.trim())),
-                    target: self.target,
-                    overwrite: self.overwrite,
-                    password: None,
-                    delete_archives: self.delete,
-                });
-            }
         });
-        start
+        egui::CentralPanel::default().frame(page_frame()).show(ui, |ui| {
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                ui.heading("압축 풀기");
+                ui.add_space(6.0);
+                for a in &self.archives {
+                    ui.horizontal(|ui| {
+                        icons::inline(ui, Icon::Archive);
+                        ui.add(egui::Label::new(a.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()).truncate());
+                    });
+                }
+                ui.add_space(10.0);
+                ui.label(RichText::new("대상 폴더").strong());
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.folder).desired_width((ui.available_width() - 110.0).max(200.0)));
+                    if ui.button("찾아보기...").clicked() {
+                        let start = PathBuf::from(self.folder.trim());
+                        let mut dlg = rfd::FileDialog::new();
+                        if start.is_dir() {
+                            dlg = dlg.set_directory(&start);
+                        }
+                        if let Some(d) = dlg.pick_folder() {
+                            self.folder = d.display().to_string();
+                        }
+                    }
+                });
+                // Bandizip's left column of places, as one row of shortcuts.
+                ui.horizontal_wrapped(|ui| {
+                    use windows_sys::Win32::UI::Shell::{FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads};
+                    let mut places: Vec<(&str, Option<PathBuf>)> = vec![("압축 파일 위치", self.archives.first().and_then(|a| a.parent()).map(Path::to_path_buf))];
+                    places.push(("바탕 화면", known_folder(&FOLDERID_Desktop)));
+                    places.push(("문서", known_folder(&FOLDERID_Documents)));
+                    places.push(("다운로드", known_folder(&FOLDERID_Downloads)));
+                    for (label, path) in places {
+                        if let Some(p) = path {
+                            if ui.small_button(label).on_hover_text(p.display().to_string()).clicked() {
+                                self.folder = p.display().to_string();
+                            }
+                        }
+                    }
+                });
+                ui.add_space(10.0);
+                ui.label(RichText::new("풀 위치").strong());
+                ui.radio_value(&mut self.target, Target::Auto, "알아서 풀기 (최상위 항목이 하나면 그대로, 여러 개면 '압축 파일명' 폴더)");
+                ui.radio_value(&mut self.target, Target::Name, "대상 폴더의 하위에 '압축 파일명'으로 폴더 생성 후 압축 풀기");
+                ui.radio_value(&mut self.target, Target::Here, "대상 폴더에 바로 풀기");
+                ui.add_space(8.0);
+                ui.label(RichText::new("옵션").strong());
+                ui.checkbox(&mut self.overwrite, "같은 이름의 파일이 있으면 덮어쓰기");
+                ui.checkbox(&mut self.delete, "압축 풀기 성공 후 압축 파일 삭제 (휴지통으로)");
+                ui.checkbox(&mut self.close, "압축 풀기가 끝나면 dalzip 닫기");
+                ui.checkbox(&mut self.open, "압축 풀기가 끝나면 풀린 폴더 열기");
+                ui.checkbox(&mut self.remember, "설정 기억");
+            });
+        });
+        act
     }
 }
 
@@ -927,7 +1041,7 @@ impl ExtractDlg {
 
 enum Pending {
     Open(PathBuf),
-    Run(Request, bool),
+    Run(Request, After),
 }
 
 struct PasswordPrompt {
@@ -999,7 +1113,7 @@ fn running_ui(ui: &mut egui::Ui, job: &Job) -> Option<Screen> {
                     text: format!("{e:#}"),
                     open: None,
                     ok: false,
-                    retry: if clash { job.retry.clone() } else { None },
+                    retry: if clash { job.retry.clone().map(|r| (r, job.after)) } else { None },
                 }
             }
         });
@@ -1114,6 +1228,10 @@ impl SettingsUi {
                 ui.radio_value(&mut self.s.double_click, 0, "dalzip으로 열기");
                 ui.radio_value(&mut self.s.double_click, 1, "압축 파일이 있는 폴더에 알아서 풀기");
                 ui.radio_value(&mut self.s.double_click, 2, "압축 파일명 폴더에 풀기");
+                ui.add_space(10.0);
+                ui.label(RichText::new("dalzip 창에서 압축 풀기가 끝나면").strong());
+                ui.checkbox(&mut self.s.extract_close, "dalzip 닫기");
+                ui.checkbox(&mut self.s.extract_open, "풀린 폴더 열기");
                 ui.add_space(10.0);
                 ui.label(RichText::new("기타").strong());
                 ui.checkbox(&mut self.s.cascade, "탐색기 메뉴를 계단식(하위 메뉴 \"dalzip\")으로 보여주기");

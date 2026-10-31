@@ -48,6 +48,14 @@ pub struct Settings {
     /// 0 open, 1 smart-extract next to it, 2 extract into <name>\.
     pub double_click: u32,
     pub rule: String,
+    /// After extracting from the dalzip window: close it (default on).
+    pub extract_close: bool,
+    /// After extracting from the dalzip window: open the output folder (default on, as Bandizip).
+    pub extract_open: bool,
+    /// Extract dialog's last choices, kept when `extract_remember` is on (Bandizip's "설정 기억").
+    pub extract_target: u32,
+    pub extract_delete: bool,
+    pub extract_remember: bool,
 }
 
 fn wide(s: &str) -> Vec<u16> {
@@ -81,7 +89,17 @@ impl Settings {
             cascade: get_dword("menu_cascade").is_some_and(|v| v != 0),
             double_click: get_dword("double_click").unwrap_or(0).min(2),
             rule: get_string("name_rule").filter(|s| !s.trim().is_empty()).unwrap_or_else(|| DEFAULT_RULE.into()),
+            extract_close: get_dword("extract_close").map_or(true, |v| v != 0),
+            extract_open: get_dword("extract_open").map_or(true, |v| v != 0),
+            extract_target: get_dword("extract_target").unwrap_or(0).min(2),
+            extract_delete: get_dword("extract_delete").is_some_and(|v| v != 0),
+            extract_remember: get_dword("extract_remember").map_or(true, |v| v != 0),
         }
+    }
+
+    /// What to do after an extraction started from the dalzip window.
+    pub fn after_extract(&self) -> crate::jobs::After {
+        crate::jobs::After { close: self.extract_close, open_folder: self.extract_open }
     }
 
     pub fn save(&self) -> anyhow::Result<()> {
@@ -100,6 +118,11 @@ impl Settings {
         }
         set_dword("menu_cascade", self.cascade as u32);
         set_dword("double_click", self.double_click);
+        set_dword("extract_close", self.extract_close as u32);
+        set_dword("extract_open", self.extract_open as u32);
+        set_dword("extract_target", self.extract_target);
+        set_dword("extract_delete", self.extract_delete as u32);
+        set_dword("extract_remember", self.extract_remember as u32);
         let n = wide("name_rule");
         let v = wide(&self.rule);
         unsafe {

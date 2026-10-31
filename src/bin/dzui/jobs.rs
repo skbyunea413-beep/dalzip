@@ -15,13 +15,25 @@ pub enum Outcome {
     Tested { summary: String },
 }
 
+/// What to do once a job finishes without error.
+#[derive(Clone, Copy, Default)]
+pub struct After {
+    /// Close the window (shell quick actions; extraction by default).
+    pub close: bool,
+    /// Open the output folder in Explorer (Bandizip's openFolderWhenComplete).
+    pub open_folder: bool,
+}
+
+impl After {
+    pub const CLOSE: After = After { close: true, open_folder: false };
+}
+
 pub struct Job {
     pub title: String,
     pub progress: Arc<Progress>,
     pub result: Arc<Mutex<Option<Result<Outcome>>>>,
     pub started: Instant,
-    /// Close the window when this finishes without error (shell quick actions).
-    pub auto_close: bool,
+    pub after: After,
     /// Re-run the same job, e.g. with overwrite after a clash.
     pub retry: Option<Request>,
 }
@@ -79,7 +91,7 @@ impl Request {
     }
 }
 
-pub fn spawn(req: Request, ctx: egui::Context, auto_close: bool) -> Job {
+pub fn spawn(req: Request, ctx: egui::Context, after: After) -> Job {
     let progress = Progress::new();
     let result = Arc::new(Mutex::new(None));
     let (p, slot, r) = (progress.clone(), result.clone(), req.clone());
@@ -88,7 +100,7 @@ pub fn spawn(req: Request, ctx: egui::Context, auto_close: bool) -> Job {
         *slot.lock().unwrap() = Some(out);
         ctx.request_repaint();
     });
-    Job { title: req.title().to_string(), progress, result, started: Instant::now(), auto_close, retry: Some(req) }
+    Job { title: req.title().to_string(), progress, result, started: Instant::now(), after, retry: Some(req) }
 }
 
 /// Deflate level for a 0-9 dalzip level when writing ZIP.

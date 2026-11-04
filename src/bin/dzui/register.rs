@@ -22,6 +22,7 @@ use windows_sys::Win32::UI::Shell::{SHChangeNotify, SHCNE_ASSOCCHANGED, SHCNF_ID
 pub const CLSID: &str = "{2BEFAA5D-6E6D-44ED-BF55-CE6F77683D4B}";
 const PROGID: &str = "dalzip.archive";
 const PROGID_ZIP: &str = "dalzip.zip";
+const PROGID_ISO: &str = "dalzip.iso";
 const BASES: [&str; 3] = ["*", "Directory", "Directory\\Background"];
 
 fn wide(s: &str) -> Vec<u16> {
@@ -191,8 +192,8 @@ pub fn register(dir: &Path) -> Result<String> {
         2 => format!("\"{gui}\" x --target name \"%1\""),
         _ => format!("\"{gui}\" \"%1\""),
     };
-    // Icon resources 101 (.dz) and 102 (.zip) come from build.rs.
-    for (progid, name, icon_id) in [(PROGID, "dalzip 압축 파일", 101), (PROGID_ZIP, "압축(ZIP) 파일", 102)] {
+    // Icon resources 101 (.dz), 102 (.zip) and 116 (.iso) come from build.rs.
+    for (progid, name, icon_id) in [(PROGID, "dalzip 압축 파일", 101), (PROGID_ZIP, "압축(ZIP) 파일", 102), (PROGID_ISO, "디스크 이미지 파일", 116)] {
         Key::create(progid)?.set("", name)?;
         Key::create(&format!("{progid}\\DefaultIcon"))?.set("", &format!("{gui},-{icon_id}"))?;
         Key::create(&format!("{progid}\\shell\\open"))?.set("FriendlyAppName", "dalzip")?;
@@ -202,10 +203,12 @@ pub fn register(dir: &Path) -> Result<String> {
     // .zip belongs to whatever the user picked (a hash-protected UserChoice, Bandizip here);
     // dalzip only offers itself in "Open with", where the user can make it the default.
     Key::create(".zip\\OpenWithProgids")?.set_empty(PROGID_ZIP)?;
+    // The same for .iso, which Windows itself opens by mounting.
+    Key::create(".iso\\OpenWithProgids")?.set_empty(PROGID_ISO)?;
 
     unsafe { SHChangeNotify(SHCNE_ASSOCCHANGED as i32, SHCNF_IDLIST, std::ptr::null(), std::ptr::null()) };
     Ok(format!(
-        "registered: {count} menu entries ({}), .dz -> {gui}, offered for .zip",
+        "registered: {count} menu entries ({}), .dz -> {gui}, offered for .zip and .iso",
         if s.cascade { "cascade" } else { "flat" }
     ))
 }
@@ -215,9 +218,12 @@ pub fn unregister() -> Result<String> {
     delete_tree(&format!("CLSID\\{CLSID}"));
     delete_tree(PROGID);
     delete_tree(PROGID_ZIP);
+    delete_tree(PROGID_ISO);
     delete_tree(".dz");
-    let (k, v) = (wide("Software\\Classes\\.zip\\OpenWithProgids"), wide(PROGID_ZIP));
-    unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, k.as_ptr(), v.as_ptr()) };
+    for (ext, progid) in [(".zip", PROGID_ZIP), (".iso", PROGID_ISO)] {
+        let (k, v) = (wide(&format!("Software\\Classes\\{ext}\\OpenWithProgids")), wide(progid));
+        unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, k.as_ptr(), v.as_ptr()) };
+    }
     unsafe { SHChangeNotify(SHCNE_ASSOCCHANGED as i32, SHCNF_IDLIST, std::ptr::null(), std::ptr::null()) };
     Ok("탐색기 메뉴와 .dz 연결을 제거했습니다".into())
 }

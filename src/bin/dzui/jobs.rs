@@ -4,7 +4,7 @@
 use eframe::egui;
 use anyhow::{bail, Context, Result};
 use dalzip::util::human;
-use dalzip::{create, create_zip, extract, extract_zip, is_zip, list_zip, Archive, CreateOpts, Progress, Target};
+use dalzip::{create, create_zip, extract, extract_iso, extract_zip, is_iso, is_zip, list_iso, list_zip, Archive, CreateOpts, Progress, Target};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -173,7 +173,12 @@ fn run(req: &Request, p: &Arc<Progress>) -> Result<Outcome> {
                     Some(b) => b.clone(),
                     None => a.parent().map(Path::to_path_buf).unwrap_or_default(),
                 };
-                let (dest, r) = if is_zip(a) {
+                let (dest, r) = if is_iso(a) {
+                    let z = list_iso(a)?;
+                    let dest = z.destination(&base, *target);
+                    let r = extract_iso(&z, Some(&dest), *overwrite, Some(p))?;
+                    (dest, r)
+                } else if is_zip(a) {
                     let z = list_zip(a)?;
                     let dest = z.destination(&base, *target);
                     let r = extract_zip(&z, Some(&dest), *overwrite, password.as_deref(), Some(p))?;
@@ -188,10 +193,21 @@ fn run(req: &Request, p: &Arc<Progress>) -> Result<Outcome> {
                 bytes += r.bytes;
                 dests.push(dest);
             }
-            let mut summary = format!("{files}개 파일 ({}) 풀기 완료, 모든 체크섬 일치", human(bytes));
+            // Disc images have no checksums, so nothing proves one safe to throw away.
+            let (images, checked): (Vec<PathBuf>, Vec<PathBuf>) = archives.iter().cloned().partition(|a| is_iso(a));
+            let mut summary = if images.is_empty() {
+                format!("{files}개 파일 ({}) 풀기 완료, 모든 체크섬 일치", human(bytes))
+            } else {
+                format!("{files}개 파일 ({}) 풀기 완료\nISO에는 체크섬이 없어 내용까지 검증하지는 못했습니다", human(bytes))
+            };
             if *delete_archives {
-                recycle(archives)?;
-                summary.push_str(&format!("\n압축 파일 {}개를 휴지통으로 옮겼습니다", archives.len()));
+                if !checked.is_empty() {
+                    recycle(&checked)?;
+                    summary.push_str(&format!("\n압축 파일 {}개를 휴지통으로 옮겼습니다", checked.len()));
+                }
+                if !images.is_empty() {
+                    summary.push_str(&format!("\nISO {}개는 검증할 수 없어 지우지 않았습니다", images.len()));
+                }
             }
             Ok(Outcome::Extracted { dests, summary })
         }
@@ -199,18 +215,19 @@ fn run(req: &Request, p: &Arc<Progress>) -> Result<Outcome> {
             let mut lines = Vec::new();
             for a in archives {
                 p.reset();
+                let name = a.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                if is_iso(a) {
+                    let r = extract_iso(&list_iso(a)?, None, false, Some(p))?;
+                    lines.push(format!("{name}: {}개 파일 ({}) 모두 읽힘. ISO에는 체크섬이 없어 내용까지 검증하지는 못합니다", r.files, human(r.bytes)));
+                    continue;
+                }
                 let r = if is_zip(a) {
                     extract_zip(&list_zip(a)?, None, false, password.as_deref(), Some(p))?
                 } else {
                     let ar = Archive::open(a, password.as_deref()).with_context(|| a.display().to_string())?;
                     extract(&ar, None, false, None, Some(p))?
                 };
-                lines.push(format!(
-                    "{}: {}개 파일 ({}) 정상",
-                    a.file_name().map(|n| n.to_string_lossy()).unwrap_or_default(),
-                    r.files,
-                    human(r.bytes)
-                ));
+                lines.push(format!("{name}: {}개 파일 ({}) 정상", r.files, human(r.bytes)));
             }
             Ok(Outcome::Tested { summary: lines.join("\n") })
         }

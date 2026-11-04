@@ -10,7 +10,7 @@ use crate::register;
 use crate::settings::{self, Settings, MENU};
 use dalzip::format::Kind;
 use dalzip::util::{fmt_time_at, human};
-use dalzip::{is_encrypted, is_zip, list_zip, Archive, Target, ZipListing};
+use dalzip::{is_encrypted, is_iso, is_zip, list_iso, list_zip, Archive, IsoListing, Target, ZipListing};
 use egui::{Align2, Color32, CornerRadius, FontId, RichText, Sense, Stroke, Vec2};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -60,6 +60,12 @@ impl App {
 }
 
 fn open_archive(path: PathBuf, password: Option<String>) -> Screen {
+    if is_iso(&path) {
+        return match list_iso(&path) {
+            Ok(z) => Screen::Browse(Box::new(Browser::from_iso(z))),
+            Err(e) => failed("열기 실패", &e),
+        };
+    }
     // ZIP names are never encrypted, so a ZIP opens without a password; extracting asks.
     if is_zip(&path) {
         return match list_zip(&path) {
@@ -78,7 +84,9 @@ fn open_archive(path: PathBuf, password: Option<String>) -> Screen {
 
 /// Whether working on this archive needs a password first.
 fn needs_password(path: &Path) -> bool {
-    if is_zip(path) {
+    if is_iso(path) {
+        false
+    } else if is_zip(path) {
         list_zip(path).is_ok_and(|z| z.encrypted)
     } else {
         is_encrypted(path).unwrap_or(false)
@@ -218,13 +226,13 @@ fn page_frame() -> egui::Frame {
     egui::Frame::new().inner_margin(20.0).fill(Color32::from_gray(250))
 }
 
-/// Formats dalzip can open: its own .dz and ZIP.
+/// Formats dalzip can open: its own .dz, ZIP and disc images.
 fn is_archive(p: &Path) -> bool {
-    p.extension().is_some_and(|e| e.eq_ignore_ascii_case("dz")) || is_zip(p)
+    p.extension().is_some_and(|e| e.eq_ignore_ascii_case("dz")) || is_zip(p) || is_iso(p)
 }
 
 fn pick_archive() -> Option<PathBuf> {
-    rfd::FileDialog::new().add_filter("압축 파일 (*.dz, *.zip)", &["dz", "zip"]).pick_file()
+    rfd::FileDialog::new().add_filter("압축 파일 (*.dz, *.zip, *.iso)", &["dz", "zip", "iso"]).pick_file()
 }
 
 // ---------------------------------------------------------------- start screen
@@ -360,6 +368,8 @@ struct Browser {
     encrypted: bool,
     /// .dz only: bytes left to compress after dedup.
     unique: Option<u64>,
+    /// Disc images only: the file system that was read.
+    image: Option<&'static str>,
     /// Tree folders the user expanded.
     expanded: std::collections::HashSet<String>,
 }
@@ -377,6 +387,13 @@ impl Browser {
         Browser::new(z.path, items, z.size, z.encrypted, None, None)
     }
 
+    fn from_iso(z: IsoListing) -> Browser {
+        let items = z.entries.iter().map(|e| Item { path: e.path.clone(), is_dir: e.is_dir, size: e.size, mtime: e.mtime }).collect();
+        let mut b = Browser::new(z.path, items, z.size, false, None, None);
+        b.image = Some(z.filesystem);
+        b
+    }
+
     fn new(path: PathBuf, items: Vec<Item>, size: u64, encrypted: bool, unique: Option<u64>, password: Option<String>) -> Browser {
         let tree = Node::build(&items);
         let files = items.iter().filter(|e| !e.is_dir).count();
@@ -391,7 +408,7 @@ impl Browser {
         if tree.files.is_empty() && tree.dirs.len() == 1 {
             cwd.push(tree.dirs.keys().next().cloned().unwrap_or_default());
         }
-        Browser { path, password, items, tree, cwd, selected: None, files, dirs, raw, size, encrypted, unique, expanded: Default::default() }
+        Browser { path, password, items, tree, cwd, selected: None, files, dirs, raw, size, encrypted, unique, image: None, expanded: Default::default() }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, tz: i64) -> Option<BrowseAction> {
@@ -422,9 +439,10 @@ impl Browser {
         egui::Panel::bottom("status").frame(egui::Frame::new().fill(Color32::from_gray(242)).inner_margin(6.0)).show(ui, |ui| {
             // Bandizip shows space saved; so do we, plus what dedup left to compress.
             let saved = if self.raw > 0 { 100.0 - self.size as f64 * 100.0 / self.raw as f64 } else { 0.0 };
-            let detail = match self.unique {
-                Some(u) => format!("솔리드, {saved:.1}% 절약)  ·  원본 {}, 중복 제거 후 {}", human(self.raw), human(u)),
-                None => format!("ZIP, {saved:.1}% 절약)  ·  원본 {}", human(self.raw)),
+            let detail = match (self.image, self.unique) {
+                (Some(fs), _) => format!("디스크 이미지, {fs})  ·  파일 합계 {}", human(self.raw)),
+                (None, Some(u)) => format!("솔리드, {saved:.1}% 절약)  ·  원본 {}, 중복 제거 후 {}", human(self.raw), human(u)),
+                (None, None) => format!("ZIP, {saved:.1}% 절약)  ·  원본 {}", human(self.raw)),
             };
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(format!(
@@ -1027,7 +1045,7 @@ impl ExtractDlg {
                 ui.add_space(8.0);
                 ui.label(RichText::new("옵션").strong());
                 ui.checkbox(&mut self.overwrite, "같은 이름의 파일이 있으면 덮어쓰기");
-                ui.checkbox(&mut self.delete, "압축 풀기 성공 후 압축 파일 삭제 (휴지통으로)");
+                ui.checkbox(&mut self.delete, "압축 풀기 성공 후 압축 파일 삭제 (휴지통으로, ISO는 검증할 수 없어 제외)");
                 ui.checkbox(&mut self.close, "압축 풀기가 끝나면 dalzip 닫기");
                 ui.checkbox(&mut self.open, "압축 풀기가 끝나면 풀린 폴더 열기");
                 ui.checkbox(&mut self.remember, "설정 기억");

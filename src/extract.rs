@@ -114,7 +114,8 @@ impl Archive {
 pub(crate) fn safe_path(p: &str) -> Result<PathBuf> {
     let mut out = PathBuf::new();
     for part in p.split('/') {
-        if part.is_empty() || part == "." || part == ".." || part.contains(['\\', ':', '\0']) {
+        // Windows drops trailing dots and spaces, so ".. " would walk up like "..".
+        if part.trim_end_matches(['.', ' ']).is_empty() || part.contains(['\\', ':', '\0']) {
             bail!("refusing unsafe path in archive: {p:?}");
         }
         out.push(part);
@@ -538,7 +539,7 @@ mod tests {
 
     #[test]
     fn rejects_paths_that_escape() {
-        for bad in ["../x", "a/../../x", "/abs", "C:/win", "a\\b", "a//b", "", "./a"] {
+        for bad in ["../x", "a/../../x", "/abs", "C:/win", "a\\b", "a//b", "", "./a", ".. /x", "a/... /b", " "] {
             assert!(safe_path(bad).is_err(), "{bad:?} should be rejected");
         }
         assert!(safe_path("dir/sub/file.txt").is_ok());

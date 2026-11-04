@@ -141,6 +141,13 @@ fn run() -> Result<()> {
             Ok(())
         }
         Cmd::X { archive, out, password, yes, threads, quiet } => {
+            if dalzip::is_iso(&archive) {
+                let r = dalzip::extract_iso(&dalzip::list_iso(&archive)?, Some(&out), yes, None)?;
+                if !quiet {
+                    eprintln!("dz: extracted {} files ({}) in {:.1}s; disc images carry no checksums", r.files, human(r.bytes), r.secs);
+                }
+                return Ok(());
+            }
             let r = if dalzip::is_zip(&archive) {
                 dalzip::extract_zip(&dalzip::list_zip(&archive)?, Some(&out), yes, password.as_deref(), None)?
             } else {
@@ -153,6 +160,11 @@ fn run() -> Result<()> {
             Ok(())
         }
         Cmd::T { archive, password, threads } => {
+            if dalzip::is_iso(&archive) {
+                let r = dalzip::extract_iso(&dalzip::list_iso(&archive)?, None, false, None)?;
+                eprintln!("dz: read {} files ({}) in {:.1}s; disc images carry no checksums, so only readability was tested", r.files, human(r.bytes), r.secs);
+                return Ok(());
+            }
             let r = if dalzip::is_zip(&archive) {
                 dalzip::extract_zip(&dalzip::list_zip(&archive)?, None, false, password.as_deref(), None)?
             } else {
@@ -163,6 +175,16 @@ fn run() -> Result<()> {
             Ok(())
         }
         Cmd::L { archive, password } => {
+            if dalzip::is_iso(&archive) {
+                let z = dalzip::list_iso(&archive)?;
+                for e in &z.entries {
+                    let when = dalzip::util::fmt_time_at(e.mtime, dalzip::util::local_offset_secs());
+                    let size = if e.is_dir { "<dir>".to_string() } else { e.size.to_string() };
+                    println!("{size:>12}  {when}  {}{}", e.path, if e.is_dir { "/" } else { "" });
+                }
+                println!("\n{} entries | image {} | {}", z.entries.len(), human(z.size), z.filesystem);
+                return Ok(());
+            }
             if dalzip::is_zip(&archive) {
                 let z = dalzip::list_zip(&archive)?;
                 for e in &z.entries {

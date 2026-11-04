@@ -47,11 +47,11 @@ static MODULE: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 
 #[derive(Clone, Copy, PartialEq)]
 enum Needs {
-    /// Anything that is not only archives (.dz / .zip).
+    /// Anything that is not only archives (.dz / .zip / .iso).
     Sources,
     /// Two or more non-archive items.
     SourcesMany,
-    /// Only archives (.dz / .zip).
+    /// Only archives (.dz / .zip / .iso).
     Archives,
     OneArchive,
 }
@@ -154,9 +154,9 @@ fn selection(items: Ref<IShellItemArray>) -> Result<Vec<String>> {
     Ok(out)
 }
 
-/// Archives dzui can open: .dz and .zip.
+/// Archives dzui can open: .dz, .zip and .iso.
 fn is_archive(p: &str) -> bool {
-    Path::new(p).extension().is_some_and(|e| e.eq_ignore_ascii_case("dz") || e.eq_ignore_ascii_case("zip"))
+    Path::new(p).extension().is_some_and(|e| ["dz", "zip", "iso"].iter().any(|x| e.eq_ignore_ascii_case(x)))
 }
 
 fn file_name(p: &str, stem: bool) -> String {

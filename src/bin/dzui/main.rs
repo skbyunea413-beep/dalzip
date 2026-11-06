@@ -11,6 +11,7 @@
 //! dzui x --target here|name|auto|dlg [--delete] [--list F] [archives…]
 //! dzui t  [--list F] [archives…]              test
 //! dzui settings                               Explorer menu settings
+//! dzui newfolder <folder>                     make "새 폴더" there and start renaming it
 //! dzui --register | --unregister              Explorer integration (HKCU)
 //! ```
 //!
@@ -27,6 +28,7 @@
 mod app;
 mod icons;
 mod jobs;
+mod newfolder;
 mod preview;
 mod register;
 mod settings;
@@ -153,6 +155,19 @@ fn main() {
             message(&line);
         }
         std::process::exit(if r.is_ok() { 0 } else { 1 });
+    }
+
+    // No window: create the folder, hand it to Explorer for renaming, done.
+    if args.first().map(String::as_str) == Some("newfolder") {
+        let dir = PathBuf::from(args.get(1).map(String::as_str).unwrap_or_default());
+        match newfolder::create(&dir) {
+            Ok(folder) => newfolder::select_for_rename(&dir, &folder),
+            Err(e) => {
+                message(&format!("{e:#}"));
+                std::process::exit(1);
+            }
+        }
+        return;
     }
 
     let launch = match parse(&args) {

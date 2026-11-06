@@ -135,6 +135,7 @@ fn bases_for(g: Group) -> &'static [&'static str] {
         Group::Archives => &["*"],
         Group::Sources => &["*", "Directory"],
         Group::Folder => &["Directory", "Directory\\Background"],
+        Group::Background => &["Directory\\Background"],
     }
 }
 
@@ -165,13 +166,20 @@ pub fn register(dir: &Path) -> Result<String> {
         if items.is_empty() {
             continue;
         }
-        // The console item is a plain command, as in Bandizip (`cmd.exe /s /k pushd "%s"`):
-        // a background click hands verbs no selection, so it cannot go through the DLL.
-        let (cmd, items): (Vec<_>, Vec<_>) = items.into_iter().partition(|(_, id, _)| *id == "f_cmd");
+        // The console and new-folder items are plain commands, as in Bandizip (`cmd.exe /s /k pushd "%s"`):
+        // a background click hands verbs no selection, so they cannot go through the DLL.
+        // They stay in the menu itself, never in the cascade.
+        let (cmd, items): (Vec<_>, Vec<_>) = items.into_iter().partition(|(_, id, _)| matches!(*id, "f_cmd" | "f_newfolder"));
         for (i, id, _) in &cmd {
             let path = format!("{base}\\shell\\dalzip.{i:02}_{id}");
-            Key::create(&path)?.set("MUIVerb", "명령 창 열기(&C)")?.set("Icon", "cmd.exe")?;
-            Key::create(&format!("{path}\\command"))?.set("", "cmd.exe /s /k pushd \"%V\"")?;
+            if *id == "f_newfolder" {
+                // Bandizip puts it first in the menu.
+                Key::create(&path)?.set("MUIVerb", "새 폴더(&F)")?.set("Icon", "imageres.dll,-3")?.set("Position", "Top")?;
+                Key::create(&format!("{path}\\command"))?.set("", &format!("\"{gui}\" newfolder \"%V\""))?;
+            } else {
+                Key::create(&path)?.set("MUIVerb", "명령 창 열기(&C)")?.set("Icon", "cmd.exe")?;
+                Key::create(&format!("{path}\\command"))?.set("", "cmd.exe /s /k pushd \"%V\"")?;
+            }
         }
         if s.cascade && !items.is_empty() {
             let root = format!("{base}\\shell\\dalzip");

@@ -58,7 +58,7 @@ enum Needs {
 
 /// (item id, dzui arguments, what the selection must be). Ids match
 /// `MENU` in src/bin/dzui/settings.rs; registry keys are `[dalzip.]NN_<id>`.
-/// (`f_cmd`, the console item, is a plain registry command, not handled here.)
+/// (`f_cmd` and `f_newfolder` are plain registry commands, not handled here.)
 const VERBS: &[(&str, &str, Needs)] = &[
     ("x_here", "x --target here", Needs::Archives),
     ("x_auto", "x --target auto", Needs::Archives),

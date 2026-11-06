@@ -1235,6 +1235,7 @@ impl SettingsUi {
                     (settings::Group::Archives, "압축 파일(.dz)을 선택할 때"),
                     (settings::Group::Sources, "파일·폴더를 선택할 때 (압축하기)"),
                     (settings::Group::Folder, "폴더나 폴더 바닥을 선택할 때"),
+                    (settings::Group::Background, "폴더 빈 곳을 오른쪽 클릭할 때"),
                 ];
                 ui.columns(2, |cols| {
                     for (k, (g, title)) in groups.iter().enumerate() {

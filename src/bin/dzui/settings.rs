@@ -14,6 +14,8 @@ pub enum Group {
     Sources,
     /// Shown on a folder or a folder's background.
     Folder,
+    /// Shown only on a folder's background (a click on empty space).
+    Background,
 }
 
 /// Explorer menu items: (id, label in settings, group, on by default).
@@ -36,6 +38,7 @@ pub const MENU: &[(&str, &str, Group, bool)] = &[
     ("c_rule", "파일명에 규칙을 넣어 압축하기", Group::Sources, false),
     ("c_dlg", "dalzip으로 압축하기...", Group::Sources, true),
     ("f_cmd", "명령 창(cmd) 열기", Group::Folder, false),
+    ("f_newfolder", "새 폴더 만들기 (메뉴 맨 위)", Group::Background, true),
 ];
 
 pub const DEFAULT_RULE: &str = "${NAME} %Y-%m-%d %H-%M-%S";

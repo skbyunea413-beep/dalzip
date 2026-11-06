@@ -109,6 +109,30 @@ impl Archive {
     }
 }
 
+impl Archive {
+    /// One file's bytes, checked against its hash (for previews; extraction streams instead).
+    pub fn read_file(&self, entry: usize) -> Result<Vec<u8>> {
+        let idx = &self.index;
+        let e = idx.entries.get(entry).context("no such entry")?;
+        let ch = Chains::new(idx);
+        let mut blocks: HashMap<u32, Arc<Vec<u8>>> = HashMap::new();
+        for s in ch.of(idx, e) {
+            for (id, v) in self.read_chain(s, ch.span[&s].0)? {
+                blocks.insert(id, v);
+            }
+        }
+        let mut out = Vec::with_capacity(e.size as usize);
+        for &cid in &e.chunks {
+            let c = idx.chunks[cid as usize];
+            out.extend_from_slice(&blocks[&c.block][c.offset as usize..(c.offset + c.len) as usize]);
+        }
+        if blake3::hash(&out).as_bytes() != &e.hash {
+            bail!("{} failed verification", e.path);
+        }
+        Ok(out)
+    }
+}
+
 /// Turns a stored path into a safe relative path, refusing anything that could
 /// escape the output folder.
 pub(crate) fn safe_path(p: &str) -> Result<PathBuf> {

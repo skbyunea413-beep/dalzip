@@ -19,4 +19,4 @@ pub use extract::{extract, is_encrypted, Archive, ExtractReport, Target};
 pub use iso::{extract_iso, is_iso, list_iso, IsoListing};
 pub use progress::Progress;
 pub use zip::{create_zip, ZipReport};
-pub use zipread::{extract_zip, is_zip, list_zip, ZipListing};
+pub use zipread::{extract_zip, is_zip, list_zip, read_zip_entry, ZipListing};

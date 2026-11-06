@@ -216,6 +216,19 @@ pub fn extract_zip(
     Ok(ExtractReport { files: files.len(), bytes, secs: started.elapsed().as_secs_f64() })
 }
 
+/// One entry's bytes, CRC-checked (for previews).
+pub fn read_zip_entry(path: &Path, index: usize, password: Option<&str>) -> Result<Vec<u8>> {
+    let mut z = open(path)?;
+    let mut f = match password {
+        Some(pw) => z.by_index_decrypt(index, pw.as_bytes()),
+        None => z.by_index(index),
+    }
+    .map_err(|err| zip_error(err, &index.to_string()))?;
+    let mut out = Vec::with_capacity(f.size() as usize);
+    f.read_to_end(&mut out)?;
+    Ok(out)
+}
+
 /// A read error inside an entry: cancellation, a CRC mismatch, or bad data.
 fn read_error(err: io::Error, name: &str) -> anyhow::Error {
     if err.get_ref().is_some_and(|e| e.is::<crate::progress::Cancelled>()) {

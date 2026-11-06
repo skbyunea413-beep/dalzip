@@ -656,6 +656,13 @@ pub fn list_iso(path: &Path) -> Result<IsoListing> {
 }
 
 impl IsoListing {
+    /// One file's bytes (for previews).
+    pub fn read_entry(&self, entry: usize) -> Result<Vec<u8>> {
+        let e = self.entries.get(entry).context("no such entry")?;
+        let mut img = Image { r: File::open(&self.path)?, size: self.size };
+        img.read_extents(&e.extents)
+    }
+
     pub fn roots(&self) -> usize {
         let mut r: Vec<&str> = self.entries.iter().map(|e| e.path.split('/').next().unwrap_or("")).collect();
         r.sort_unstable();

@@ -6,6 +6,7 @@
 use eframe::egui;
 use crate::icons::{self, Icon};
 use crate::jobs::{self, After, Format, Job, Outcome, Request};
+use crate::preview::{Preview, Source};
 use crate::register;
 use crate::settings::{self, Settings, MENU};
 use dalzip::format::Kind;
@@ -77,7 +78,7 @@ fn open_archive(path: PathBuf, password: Option<String>) -> Screen {
         return Screen::Password(PasswordPrompt::new(Pending::Open(path)));
     }
     match Archive::open(&path, password.as_deref()) {
-        Ok(ar) => Screen::Browse(Box::new(Browser::from_dz(path, &ar, password))),
+        Ok(ar) => Screen::Browse(Box::new(Browser::from_dz(path, ar, password))),
         Err(e) => failed("열기 실패", &e),
     }
 }
@@ -309,6 +310,8 @@ struct Item {
     is_dir: bool,
     size: u64,
     mtime: i64,
+    /// Where the format keeps it: .dz entry, ZIP index or ISO entry (for the preview).
+    src: usize,
 }
 
 #[derive(Default)]
@@ -372,29 +375,33 @@ struct Browser {
     image: Option<&'static str>,
     /// Tree folders the user expanded.
     expanded: std::collections::HashSet<String>,
+    preview: Preview,
 }
 
 impl Browser {
-    fn from_dz(path: PathBuf, ar: &Archive, password: Option<String>) -> Browser {
+    fn from_dz(path: PathBuf, ar: Archive, password: Option<String>) -> Browser {
         let idx = &ar.index;
-        let items = idx.entries.iter().map(|e| Item { path: e.path.clone(), is_dir: e.kind == Kind::Dir, size: e.size, mtime: e.mtime }).collect();
+        let items = idx.entries.iter().enumerate().map(|(i, e)| Item { path: e.path.clone(), is_dir: e.kind == Kind::Dir, size: e.size, mtime: e.mtime, src: i }).collect();
         let unique = idx.blocks.iter().map(|b| b.raw_len).sum();
-        Browser::new(path, items, ar.size, ar.encrypted(), Some(unique), password)
+        let (size, encrypted) = (ar.size, ar.encrypted());
+        Browser::new(path, items, size, encrypted, Some(unique), password, Source::Dz(ar))
     }
 
     fn from_zip(z: ZipListing) -> Browser {
-        let items = z.entries.iter().map(|e| Item { path: e.path.clone(), is_dir: e.is_dir, size: e.size, mtime: e.mtime }).collect();
-        Browser::new(z.path, items, z.size, z.encrypted, None, None)
+        let items = z.entries.iter().map(|e| Item { path: e.path.clone(), is_dir: e.is_dir, size: e.size, mtime: e.mtime, src: e.index }).collect();
+        let source = Source::Zip { path: z.path.clone(), password: None };
+        Browser::new(z.path, items, z.size, z.encrypted, None, None, source)
     }
 
     fn from_iso(z: IsoListing) -> Browser {
-        let items = z.entries.iter().map(|e| Item { path: e.path.clone(), is_dir: e.is_dir, size: e.size, mtime: e.mtime }).collect();
-        let mut b = Browser::new(z.path, items, z.size, false, None, None);
-        b.image = Some(z.filesystem);
+        let items = z.entries.iter().enumerate().map(|(i, e)| Item { path: e.path.clone(), is_dir: e.is_dir, size: e.size, mtime: e.mtime, src: i }).collect();
+        let (path, size, fs) = (z.path.clone(), z.size, z.filesystem);
+        let mut b = Browser::new(path, items, size, false, None, None, Source::Iso(z));
+        b.image = Some(fs);
         b
     }
 
-    fn new(path: PathBuf, items: Vec<Item>, size: u64, encrypted: bool, unique: Option<u64>, password: Option<String>) -> Browser {
+    fn new(path: PathBuf, items: Vec<Item>, size: u64, encrypted: bool, unique: Option<u64>, password: Option<String>, source: Source) -> Browser {
         let tree = Node::build(&items);
         let files = items.iter().filter(|e| !e.is_dir).count();
         // Zips often list folders only implicitly, so count them from the tree.
@@ -408,7 +415,7 @@ impl Browser {
         if tree.files.is_empty() && tree.dirs.len() == 1 {
             cwd.push(tree.dirs.keys().next().cloned().unwrap_or_default());
         }
-        Browser { path, password, items, tree, cwd, selected: None, files, dirs, raw, size, encrypted, unique, image: None, expanded: Default::default() }
+        Browser { path, password, items, tree, cwd, selected: None, files, dirs, raw, size, encrypted, unique, image: None, expanded: Default::default(), preview: Preview::new(source) }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, tz: i64) -> Option<BrowseAction> {
@@ -439,6 +446,8 @@ impl Browser {
         egui::Panel::bottom("status").frame(egui::Frame::new().fill(Color32::from_gray(242)).inner_margin(6.0)).show(ui, |ui| {
             // Bandizip shows space saved; so do we, plus what dedup left to compress.
             let saved = if self.raw > 0 { 100.0 - self.size as f64 * 100.0 / self.raw as f64 } else { 0.0 };
+            // A few header bytes over the original would otherwise read "-0.0%".
+            let saved = if saved.abs() < 0.05 { 0.0 } else { saved };
             let detail = match (self.image, self.unique) {
                 (Some(fs), _) => format!("디스크 이미지, {fs})  ·  파일 합계 {}", human(self.raw)),
                 (None, Some(u)) => format!("솔리드, {saved:.1}% 절약)  ·  원본 {}, 중복 제거 후 {}", human(self.raw), human(u)),
@@ -458,8 +467,16 @@ impl Browser {
             });
         });
 
+        // The selected file in the list, previewed under the tree when it is an image.
+        let sel = self.selected.as_deref().and_then(|k| self.tree.at(&self.cwd).files.iter().copied().find(|&i| self.items[i].path.rsplit('/').next() == Some(k)));
+        let ctx = ui.ctx().clone();
+        self.preview.follow(&ctx, sel.map(|i| (i, self.items[i].src, self.items[i].path.as_str(), self.items[i].size)));
+
         // The panel's width is the user's: rows cut long names with "…" instead of widening it.
         egui::Panel::left("tree").resizable(true).default_size(240.0).size_range(120.0..=640.0).show(ui, |ui| {
+            if self.preview.active() {
+                egui::Panel::bottom("preview").resizable(false).frame(egui::Frame::new().inner_margin(6.0)).show(ui, |ui| self.preview.ui(ui));
+            }
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 let name = self.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                 if list_row(ui, 0.0, None, Icon::Archive, &name, self.cwd.is_empty()).clicked() {

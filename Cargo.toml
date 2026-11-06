@@ -28,6 +28,7 @@ lzma-sys = "0.1"
 zstd = "0.13"
 eframe = { version = "0.37", default-features = false, features = ["default_fonts", "glow", "accesskit"] }
 rfd = "0.17"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp", "ico"] }
 crc32fast = "1"
 flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
 zopfli = { version = "0.8", default-features = false, features = ["std"] }

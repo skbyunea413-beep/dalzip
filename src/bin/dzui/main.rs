@@ -27,6 +27,7 @@
 mod app;
 mod icons;
 mod jobs;
+mod preview;
 mod register;
 mod settings;
 
